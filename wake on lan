@@ -1,0 +1,142 @@
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <string.h>
+
+// ---------------- DEVICE CLASS --------------------
+
+class Device {
+public:
+  String name;
+  byte mac[6];
+
+  Device() {}
+
+  Device(String n, byte m[6]) {
+    name = n;
+    memcpy(mac, m, 6);
+  }
+};
+
+// ---------------- DEVICE LIST ---------------------
+
+Device deviceList[3];
+
+// ---------------- STACK (WAKE HISTORY) ------------
+
+String wakeHistory[10];
+int top = -1;
+
+void pushWakeHistory(String msg) {
+  if (top < 9) {
+    wakeHistory[++top] = msg;
+  }
+}
+
+// ---------------- QUEUE (WOL REQUESTS) ------------
+
+byte requestQueue[10][6];
+int front = 0;
+int rear = 0;
+
+bool enqueue(byte mac[6]) {
+  if ((rear + 1) % 10 == front) return false;
+  memcpy(requestQueue[rear], mac, 6);
+  rear = (rear + 1) % 10;
+  return true;
+}
+
+bool dequeue(byte *output) {
+  if (front == rear) return false;
+  memcpy(output, requestQueue[front], 6);
+  front = (front + 1) % 10;
+  return true;
+}
+
+// ---------------- NETWORK CONFIG ------------------
+
+const char* ssid = "YOUR_WIFI_NAME";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+IPAddress broadcastIP(192, 168, 1, 255);
+WiFiUDP udp;
+
+// ---------------- WOL FUNCTION --------------------
+
+void sendWOL(byte *macAddress) {
+  const int WOL_PORT = 9;
+  byte packet[102];
+
+  for (int i = 0; i < 6; i++)
+    packet[i] = 0xFF;
+
+  for (int i = 1; i <= 16; i++)
+    memcpy(&packet[i * 6], macAddress, 6);
+
+  udp.beginPacket(broadcastIP, WOL_PORT);
+  udp.write(packet, sizeof(packet));
+  udp.endPacket();
+
+  Serial.println("Magic Packet Sent!");
+  pushWakeHistory("Woke: " + String(macAddress[5], HEX));
+}
+
+// ---------------- INITIALIZATION ------------------
+
+void initializeSystem() {
+  Serial.begin(115200);
+
+  byte mac1[6] = {0xDE,0xAD,0xBE,0xEF,0xFE,0xED};
+  byte mac2[6] = {0x34,0x12,0x98,0xAB,0x11,0x22};
+  byte mac3[6] = {0x00,0x1A,0x2B,0x3C,0x4D,0x5E};
+
+  deviceList[0] = Device("Main PC", mac1);
+  deviceList[1] = Device("Office PC", mac2);
+  deviceList[2] = Device("Server", mac3);
+
+  Serial.println("System Initialized.");
+}
+
+// ---------------- WIFI CONNECTION -----------------
+
+void connectToWiFi() {
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nConnected!");
+  Serial.print("ESP32 IP: ");
+  Serial.println(WiFi.localIP());
+
+  udp.begin(9);
+}
+
+// ---------------- QUEUE PROCESSOR -----------------
+
+void processQueue() {
+  byte tempMac[6];
+
+  if (dequeue(tempMac)) {
+    Serial.println("Processing queued WOL request...");
+    sendWOL(tempMac);
+  }
+}
+
+// ---------------- SETUP ---------------------------
+
+void setup() {
+  initializeSystem();
+  connectToWiFi();
+
+  enqueue(deviceList[0].mac);  // Example: wake first device
+}
+
+// ---------------- LOOP ----------------------------
+
+void loop() {
+  processQueue();
+  delay(2000);
+}
